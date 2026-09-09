@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # Gateway API CRDs (Gateway/HTTPRoute types) — pulled straight from
+  # upstream so version bumps are one line, tracked in git like everything
+  # else. Vendor a local copy instead if you want to remove the remote
+  # dependency at sync time.
+  - https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
+  - gateway.yaml
+  - httproutes.yaml

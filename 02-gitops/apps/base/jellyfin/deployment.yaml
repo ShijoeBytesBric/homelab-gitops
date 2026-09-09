@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jellyfin
+  labels:
+    app: jellyfin
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # avoid two pods writing to the same hostPath at once
+  selector:
+    matchLabels:
+      app: jellyfin
+  template:
+    metadata:
+      labels:
+        app: jellyfin
+    spec:
+      # Pin to the node that actually has the media disk bind-mounted
+      nodeSelector:
+        media-node: "true"
+      containers:
+        - name: jellyfin
+          image: jellyfin/jellyfin:latest
+          ports:
+            - containerPort: 8096
+              name: http
+          env:
+            - name: TZ
+              value: "Asia/Kolkata"
+          # No database env vars: Jellyfin's Postgres backend is still an
+          # unofficial, highly-experimental plugin (JPVenson/Jellyfin.Pgsql)
+          # as of mid-2026 and isn't shipped by upstream. Staying on the
+          # default SQLite db (stored under /config) is the supported path.
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: cache
+              mountPath: /cache
+            - name: media
+              mountPath: /media
+              readOnly: false
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+      volumes:
+        - name: config
+          hostPath:
+            path: /opt/jellyfin/config
+            type: DirectoryOrCreate
+        - name: cache
+          hostPath:
+            path: /opt/jellyfin/cache
+            type: DirectoryOrCreate
+        - name: media
+          hostPath:
+            path: /mnt/mediadisk
+            type: Directory

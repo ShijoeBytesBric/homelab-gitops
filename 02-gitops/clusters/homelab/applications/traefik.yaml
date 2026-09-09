@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: traefik
+  namespace: argocd
+  annotations:
+    # Wave 0: replaces the retired ingress-nginx as the LoadBalancer-fronted
+    # entry point. ingress-nginx was archived March 24, 2026 (no more
+    # releases/patches) — Traefik as a Gateway API controller does the same
+    # job and is actively maintained.
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: homelab
+  source:
+    repoURL: https://traefik.github.io/charts
+    chart: traefik
+    # 39.* = Traefik v3.6 (LTS). Do NOT drop back to "3.*": that line resolves
+    # to chart 3.5.0 = Traefik v2.1.3, which has no Gateway API provider and
+    # ships legacy traefik.containo.us CRDs with apiVersion v1beta1 (removed in
+    # K8s 1.22+) — ArgoCD renders those, so every sync failed with "could not
+    # find version v1beta1". The v3 chart line starts at 36.0+ and carries no
+    # legacy CRDs (Gateway API CRDs are installed by gateway-config instead).
+    targetRevision: 39.*
+    helm:
+      # skipCrds: the chart ships the Gateway API CRDs in crds/ — but we
+      # already install those from upstream v1.5.1 via gateway-config. Two apps
+      # owning the same CRDs leaves traefik perpetually OutOfSync (and the two
+      # selfHeal loops fight). Skipping chart CRDs keeps gateway-config the
+      # single owner. The traefik.io CRDs are unused too (Ingress provider is
+      # off), so nothing is lost.
+      skipCrds: true
+      values: |
+        # Disable the classic Ingress provider entirely; only watch Gateway API objects.
+        providers:
+          kubernetesIngress:
+            enabled: false
+          kubernetesGateway:
+            enabled: true
+        # We define our own Gateway (media-gateway in gateway-config) rather
+        # than the chart's auto-deployed default.
+        gateway:
+          enabled: false
+        # Traefik's Service is type LoadBalancer — MetalLB (wave 0, same
+        # wave) picks it up and assigns it a LAN IP from the pool.
+        service:
+          type: LoadBalancer
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: traefik
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

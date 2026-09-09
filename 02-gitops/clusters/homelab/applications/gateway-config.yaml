@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-config
+  namespace: argocd
+  annotations:
+    # Wave 1: Gateway API CRDs first, then the Gateway + HTTPRoutes that
+    # depend on Traefik (wave 0) already being registered as a GatewayClass.
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: homelab
+  source:
+    repoURL: https://github.com/ShijoeBytesBric/homelab-gitops.git
+    targetRevision: main
+    path: 02-gitops/infrastructure/homelab/gateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: media
+  # The Gateway API API-server writes defaults (group/kind on parentRefs,
+  # group/kind/weight on backendRefs) into the persisted object; without this,
+  # ArgoCD shows the HTTPRoutes as permanently OutOfSync.
+  #
+  # NOTE: per-field jq paths like .spec.parentRefs[].group do NOT work here —
+  # ArgoCD matches jqPathExpressions against the *desired* manifest, which has
+  # no such fields (the API defaults them at admission), so nothing gets
+  # ignored. Ignoring the two arrays covers every API-written field while
+  # hostnames/matches/name/port stay watched.
+  ignoreDifferences:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      jqPathExpressions:
+        - .spec.parentRefs
+        - .spec.rules[].backendRefs
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

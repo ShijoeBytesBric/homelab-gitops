@@ -1,0 +1,93 @@
+- name: Bootstrap all cluster nodes
+  hosts: k8s_cluster
+  roles: [common]
+  tags: [common, bootstrap]
+
+- name: Configure Kubernetes master
+  hosts: masters
+  serial: 1
+  roles: [master]
+  tags: [master, control-plane]
+
+- name: Join worker nodes
+  hosts: workers
+  roles: [worker]
+  tags: [worker]
+
+- name: Verify cluster health
+  hosts: "{{ groups['masters'][0] }}"
+  tags: [verify]
+  tasks:
+    - name: Wait for all nodes to be Ready
+      shell: kubectl get nodes --no-headers | grep -v Ready | wc -l
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: not_ready
+      retries: 40
+      delay: 15
+      until: not_ready.stdout == "0"
+
+    - name: Show node status
+      shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: nodes
+
+    - name: Print nodes
+      debug:
+        msg: "{{ nodes.stdout_lines }}"
+
+    - name: Show all pods
+      shell: kubectl get pods -A
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: pods
+
+    - name: Print pods
+      debug:
+        msg: "{{ pods.stdout_lines }}"
+
+# Handoff into GitOps: install ArgoCD as the last provisioning step, so
+# 02-gitops/ takes over cluster state management from here. This play was
+# added after the original 4-play site.yml (common/master/worker/verify) —
+# kept separate and tagged so it can be skipped with --skip-tags argocd if
+# you ever want provisioning without the GitOps handoff.
+- name: Install ArgoCD
+  hosts: "{{ groups['masters'][0] }}"
+  tags: [argocd]
+  tasks:
+    - name: Create argocd namespace
+      shell: kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Install ArgoCD manifests
+      # Server-side apply: client-side apply embeds the full manifest in a
+      # last-applied annotation, which exceeds etcd's 262144-byte limit for
+      # the large applicationsets.argoproj.io CRD.
+      shell: kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Wait for argocd-server to be available
+      shell: kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
+      environment:
+        KUBECONFIG: /root/.kube/config
+
+    - name: Push project.yaml and root-app.yaml to the master
+      # This task runs on the remote master, so a chdir to a local repo path
+      # wouldn't resolve there — read the files from the control node with
+      # `lookup('file', ...)` and copy their content over instead.
+      copy:
+        content: "{{ lookup('file', playbook_dir + '/../../02-gitops/clusters/homelab/' + item) }}"
+        dest: "/tmp/{{ item }}"
+      loop:
+        - project.yaml
+        - root-app.yaml
+
+    - name: Apply the homelab AppProject and root Application
+      shell: |
+        kubectl apply -f /tmp/project.yaml
+        kubectl apply -f /tmp/root-app.yaml
+      environment:
+        KUBECONFIG: /root/.kube/config
